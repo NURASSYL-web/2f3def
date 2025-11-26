@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Очередь сдачи - Общая</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            font-size: 18px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:disabled {
+            background: #cccccc;
+        }
+        .admin-btn {
+            background: #ff4444;
+        }
+        .queue-list {
+            margin-top: 20px;
+        }
+        .queue-item {
+            padding: 10px;
+            margin: 5px 0;
+            background: #f8f8f8;
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .current-user {
+            background: #e1f5fe;
+            border-left: 4px solid #2196F3;
+        }
+        .number {
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 12px;
+        }
+        .admin-panel {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff3cd;
+            border-radius: 5px;
+            display: none;
+        }
+        .share-link {
+            background: #e7f3ff;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            word-break: break-all;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .status-joined {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            text-align: center;
+        }
+        .offline-mode {
+            background: #fff3e0;
+            color: #ef6c00;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            text-align: center;
+        }
+    </style>
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Очередь сдачи 🎯</h1>
+        
+        <div id="connectionStatus" class="offline-mode">
+            🔄 Подключаемся к базе данных...
+        </div>
+        
+        <div id="status"></div>
+        <button id="joinBtn" disabled>Я сдаю! (+)</button>
+        
+        <div class="queue-list">
+            <h3>Очередь:</h3>
+            <div id="queueContainer">Загрузка...</div>
+        </div>
+
+        <button id="adminBtn" class="admin-btn" disabled>Админ-панель</button>
+        
+        <div class="admin-panel" id="adminPanel">
+            <h3>Админ-панель</h3>
+            <p>Только вы можете сбрасывать очередь</p>
+            <button id="resetBtn">Сбросить очередь</button>
+            <button id="leaveBtn">Убрать меня из очереди</button>
+            
+            <div style="margin-top: 15px;">
+                <h4>Поделиться ссылкой:</h4>
+                <div class="share-link" id="shareLink">
+                    Загрузка...
+                </div>
+                <button id="copyBtn">Скопировать ссылку</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // === ВАША КОНФИГУРАЦИЯ FIREBASE ===
+        const firebaseConfig = {
+            apiKey: "AIzaSyC9rdaCpZ79t79rJYmnDXUlfVhr72m3mcA",
+            authDomain: "queu-2f3.firebaseapp.com",
+            databaseURL: "https://queu-2f3-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "queu-2f3",
+            storageBucket: "queu-2f3.firebasestorage.app",
+            messagingSenderId: "71623354102",
+            appId: "1:71623354102:web:b47d5e27408d5b4e3e6ed7"
+        };
+
+        // App settings
+        const ADMIN_PASSWORD = "teacher123";
+        let isAdmin = localStorage.getItem('isAdmin') === 'true';
+        let isConnected = false;
+        
+        let queue = [];
+        let userId = localStorage.getItem('userId');
+        if (!userId) {
+            userId = 'user_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('userId', userId);
+        }
+
+        // DOM elements
+        const joinBtn = document.getElementById('joinBtn');
+        const adminBtn = document.getElementById('adminBtn');
+        const adminPanel = document.getElementById('adminPanel');
+        const resetBtn = document.getElementById('resetBtn');
+        const leaveBtn = document.getElementById('leaveBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const statusDiv = document.getElementById('status');
+        const queueContainer = document.getElementById('queueContainer');
+        const shareLink = document.getElementById('shareLink');
+        const connectionStatus = document.getElementById('connectionStatus');
+
+        // Initialize Firebase with error handling
+        function initializeFirebase() {
+            try {
+                firebase.initializeApp(firebaseConfig);
+                const database = firebase.database();
+                
+                // Test connection
+                const connectedRef = database.ref(".info/connected");
+                connectedRef.on("value", function(snap) {
+                    if (snap.val() === true) {
+                        isConnected = true;
+                        connectionStatus.innerHTML = "✅ Подключено к базе данных";
+                        connectionStatus.className = "status status-joined";
+                        joinBtn.disabled = false;
+                        adminBtn.disabled = false;
+                        setupDatabaseListeners(database);
+                    } else {
+                        isConnected = false;
+                        connectionStatus.innerHTML = "⚠️ Оффлайн - проверьте интернет";
+                        connectionStatus.className = "offline-mode";
+                        joinBtn.disabled = true;
+                        adminBtn.disabled = true;
+                    }
+                });
+
+                return database;
+            } catch (error) {
+                console.error("Firebase initialization error:", error);
+                connectionStatus.innerHTML = "❌ Ошибка подключения к Firebase";
+                connectionStatus.className = "error-message";
+                return null;
+            }
+        }
+
+        function setupDatabaseListeners(database) {
+            // Listen for queue changes
+            database.ref('queue').on('value', (snapshot) => {
+                const data = snapshot.val();
+                console.log("Data received:", data);
+                
+                if (data) {
+                    queue = Object.keys(data).map(key => {
+                        return { firebaseKey: key, ...data[key] };
+                    });
+                    queue.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                } else {
+                    queue = [];
+                }
+                updateDisplay();
+            }, (error) => {
+                console.error("Database error:", error);
+                connectionStatus.innerHTML = "❌ Ошибка загрузки данных";
+                connectionStatus.className = "error-message";
+            });
+        }
+
+        // Initialize the app
+        const database = initializeFirebase();
+
+        // Event listeners
+        joinBtn.addEventListener('click', joinQueue);
+        adminBtn.addEventListener('click', toggleAdmin);
+        resetBtn.addEventListener('click', resetQueue);
+        leaveBtn.addEventListener('click', clearMyQueue);
+        copyBtn.addEventListener('click', copyShareLink);
+
+        function updateDisplay() {
+            queueContainer.innerHTML = '';
+            if (queue.length === 0) {
+                queueContainer.innerHTML = '<p>Очередь пуста</p>';
+            } else {
+                queue.forEach((person, index) => {
+                    const div = document.createElement('div');
+                    div.className = 'queue-item';
+                    if (person.userId === userId) {
+                        div.classList.add('current-user');
+                    }
+                    div.innerHTML = `
+                        <span class="number">${index + 1}.</span>
+                        <span>${person.name}</span>
+                        <span class="timestamp">${new Date(person.timestamp).toLocaleTimeString()}</span>
+                    `;
+                    queueContainer.appendChild(div);
+                });
+            }
+            
+            const userInQueue = queue.some(person => person.userId === userId);
+            
+            if (userInQueue) {
+                joinBtn.disabled = true;
+                const userPosition = queue.findIndex(p => p.userId === userId) + 1;
+                joinBtn.textContent = 'Вы уже в очереди!';
+                statusDiv.innerHTML = `<div class="status status-joined">Ваш номер в очереди: ${userPosition}</div>`;
+            } else {
+                joinBtn.disabled = !isConnected;
+                joinBtn.textContent = 'Я сдаю! (+)';
+                statusDiv.innerHTML = '';
+            }
+
+            updateShareLink();
+        }
+
+        function getUserName() {
+            let name = localStorage.getItem('userName');
+            if (!name) {
+                name = prompt('Введите ваше имя:');
+                if (name) {
+                    localStorage.setItem('userName', name);
+                } else {
+                    name = 'Аноним';
+                }
+            }
+            return name;
+        }
+
+        function joinQueue() {
+            if (!isConnected) {
+                alert('Нет подключения к интернету!');
+                return;
+            }
+            
+            const name = getUserName();
+            const timestamp = new Date().toISOString();
+            
+            if (!queue.some(person => person.userId === userId)) {
+                database.ref('queue').push({
+                    userId: userId,
+                    name: name,
+                    timestamp: timestamp
+                }).catch((error) => {
+                    alert('Ошибка при добавлении в очередь: ' + error.message);
+                });
+            }
+        }
+
+        function toggleAdmin() {
+            if (!isConnected) {
+                alert('Нет подключения к интернету!');
+                return;
+            }
+            
+            if (isAdmin) {
+                adminPanel.style.display = adminPanel.style.display === 'block' ? 'none' : 'block';
+            } else {
+                const password = prompt('Введите пароль админа:');
+                if (password === ADMIN_PASSWORD) {
+                    isAdmin = true;
+                    localStorage.setItem('isAdmin', 'true');
+                    adminPanel.style.display = 'block';
+                    alert('Админ-доступ включен!');
+                } else {
+                    alert('Неверный пароль!');
+                }
+            }
+        }
+
+        function resetQueue() {
+            if (!isConnected) {
+                alert('Нет подключения к интернету!');
+                return;
+            }
+            
+            if (!isAdmin) {
+                alert('Только админ может сбрасывать очередь!');
+                return;
+            }
+            
+            if (confirm('Точно сбросить очередь для всех?')) {
+                database.ref('queue').remove()
+                    .then(() => alert('Очередь сброшена!'))
+                    .catch((error) => alert('Ошибка: ' + error.message));
+            }
+        }
+
+        function clearMyQueue() {
+            if (!isConnected) {
+                alert('Нет подключения к интернету!');
+                return;
+            }
+            
+            const userEntry = queue.find(person => person.userId === userId);
+            if (userEntry) {
+                database.ref('queue/' + userEntry.firebaseKey).remove()
+                    .then(() => alert('Вы вышли из очереди!'))
+                    .catch((error) => alert('Ошибка: ' + error.message));
+            } else {
+                alert('Вы не в очереди!');
+            }
+        }
+
+        function updateShareLink() {
+            shareLink.textContent = window.location.href;
+        }
+
+        function copyShareLink() {
+            navigator.clipboard.writeText(shareLink.textContent)
+                .then(() => alert('Ссылка скопирована!'))
+                .catch(() => alert('Не удалось скопировать ссылку'));
+        }
+
+        // Initial setup
+        updateShareLink();
+        
+        if (!localStorage.getItem('firstVisit')) {
+            setTimeout(() => {
+                alert('Добро пожаловать! 📚\n\nКак использовать:\n1. Нажмите "+" чтобы встать в очередь\n2. Поделитесь ссылкой с одноклассниками\n3. Админ может сбрасывать очередь\n\nПароль админа: ' + ADMIN_PASSWORD);
+                localStorage.setItem('firstVisit', 'true');
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
